@@ -5,12 +5,22 @@ dotenv.config();
 
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI, {});
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('MongoDB connected...');
   } catch (err) {
-    console.error(err.message);
+    console.error('MongoDB connection error:', err.message);
     process.exit(1);
   }
 };
 
-module.exports = connectDB;
+// Function to close the database connection (useful for testing)
+const disconnectDB = async () => {
+  try {
+    await mongoose.connection.close();
+    console.log('MongoDB connection closed.');
+  } catch (err) {
+    console.error('Error closing MongoDB connection:', err.message);
+  }
+};
+
+module.exports = { connectDB, disconnectDB };
