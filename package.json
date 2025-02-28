@@ -12,6 +12,7 @@
   "author": "Onah Stephen",
   "license": "ISC",
   "dependencies": {
+    "axios": "^1.7.9",
     "bank-app": "file:",
     "bcryptjs": "^3.0.1",
     "cloudinary": "^2.5.1",

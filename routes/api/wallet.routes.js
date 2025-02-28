@@ -5,7 +5,7 @@ const {
   deposit, 
   withdraw, 
   getTransactions 
-} = require('../../controllers/walletController');
+} = require('../../controllers/paymentController');
 const { protect } = require('../../middlewares/authMiddleware');
 
 router.get('/', protect, getWalletBalance);

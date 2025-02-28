@@ -1,6 +1,6 @@
 const express = require('express');
 const dotenv = require('dotenv');
-const {connectDB} = require('./config/db');
+const { connectDB } = require('./config/db');
 const morgan = require('morgan');
 const cors = require('cors');
 const errorHandler = require('./utils/errorHandler');
@@ -9,9 +9,14 @@ dotenv.config();
 connectDB();
 
 const app = express();
+
+// Middleware for JSON parsing
 app.use(express.json());
-app.use(morgan("dev"));
+app.use(morgan('dev'));
 app.use(cors());
+
+// Special middleware for webhook to get raw body
+app.use('/api/payment/webhook', express.raw({ type: 'application/json' }));
 
 // Error Handling Middleware
 app.use(errorHandler);
