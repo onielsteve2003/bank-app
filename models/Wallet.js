@@ -17,8 +17,7 @@ const transactionSchema = new mongoose.Schema({
     default: 'pending' 
   },
   reference: { 
-    type: String, 
-    unique: true 
+    type: String
   },
   createdAt: { 
     type: Date, 
