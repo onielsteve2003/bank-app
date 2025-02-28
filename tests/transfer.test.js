@@ -4,7 +4,10 @@ const {
   requestMoney,
   getTransferTransactions,
   cancelRequest,
-  acceptRequest
+  acceptRequest,
+  getFees,
+  getLimits,
+  setLimit
 } = require('../controllers/transferController');
 const User = require('../models/User');
 const Wallet = require('../models/Wallet');
@@ -53,9 +56,9 @@ describe('Transfer Controller', () => {
     it('should return 400 if sender tries to send to self', async () => {
       req.body = { recipientEmail: 'sender@example.com', amount: 500 };
       Kyc.findOne.mockResolvedValue({ status: 'Verified' });
-      const sender = { _id: req.user._id, email: 'sender@example.com' };
+      const sender = { _id: req.user._id, email: 'sender@example.com', transferLimits: { min: 100, max: 50000 } };
       User.findById.mockResolvedValue(sender);
-      User.findOne.mockResolvedValue(sender); // Same user as sender
+      User.findOne.mockResolvedValue(sender);
       await sendMoney(req, res);
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith({ message: 'Cannot send money to yourself' });
@@ -64,32 +67,62 @@ describe('Transfer Controller', () => {
     it('should return 404 if recipient not found', async () => {
       req.body = { recipientEmail: 'recipient@example.com', amount: 500 };
       Kyc.findOne.mockResolvedValue({ status: 'Verified' });
-      User.findById.mockResolvedValue({ _id: req.user._id, email: 'sender@example.com' });
+      User.findById.mockResolvedValue({ _id: req.user._id, email: 'sender@example.com', transferLimits: { min: 100, max: 50000 } });
       User.findOne.mockResolvedValue(null);
       await sendMoney(req, res);
       expect(res.status).toHaveBeenCalledWith(404);
       expect(res.json).toHaveBeenCalledWith({ message: 'Recipient not found' });
     });
 
-    it('should return 400 if insufficient funds', async () => {
-      req.body = { recipientEmail: 'recipient@example.com', amount: 500 };
+    it('should return 400 if amount below user limit', async () => {
+      req.body = { recipientEmail: 'recipient@example.com', amount: 50 };
       Kyc.findOne.mockResolvedValue({ status: 'Verified' });
-      const sender = { _id: req.user._id, email: 'sender@example.com' };
+      const sender = { _id: req.user._id, email: 'sender@example.com', transferLimits: { min: 100, max: 50000 } };
       const recipient = { _id: new mongoose.Types.ObjectId(), email: 'recipient@example.com' };
       User.findById.mockResolvedValue(sender);
       User.findOne.mockResolvedValue(recipient);
       Wallet.findOne
-        .mockResolvedValueOnce({ balance: 200, transactions: [], save: jest.fn() })
+        .mockResolvedValueOnce({ balance: 1000, transactions: [], save: jest.fn() })
         .mockResolvedValueOnce({ balance: 0, transactions: [], save: jest.fn() });
       await sendMoney(req, res);
       expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ message: 'Insufficient funds' });
+      expect(res.json).toHaveBeenCalledWith({ message: 'Amount must be between 100 and 50000 NGN' });
     });
 
-    it('should send money successfully', async () => {
+    it('should return 400 if amount above user limit', async () => {
+      req.body = { recipientEmail: 'recipient@example.com', amount: 60000 };
+      Kyc.findOne.mockResolvedValue({ status: 'Verified' });
+      const sender = { _id: req.user._id, email: 'sender@example.com', transferLimits: { min: 100, max: 50000 } };
+      const recipient = { _id: new mongoose.Types.ObjectId(), email: 'recipient@example.com' };
+      User.findById.mockResolvedValue(sender);
+      User.findOne.mockResolvedValue(recipient);
+      Wallet.findOne
+        .mockResolvedValueOnce({ balance: 1000, transactions: [], save: jest.fn() })
+        .mockResolvedValueOnce({ balance: 0, transactions: [], save: jest.fn() });
+      await sendMoney(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ message: 'Amount must be between 100 and 50000 NGN' });
+    });
+
+    it('should return 400 if insufficient funds including fee', async () => {
       req.body = { recipientEmail: 'recipient@example.com', amount: 500 };
       Kyc.findOne.mockResolvedValue({ status: 'Verified' });
-      const sender = { _id: req.user._id, email: 'sender@example.com' };
+      const sender = { _id: req.user._id, email: 'sender@example.com', transferLimits: { min: 100, max: 50000 } };
+      const recipient = { _id: new mongoose.Types.ObjectId(), email: 'recipient@example.com' };
+      User.findById.mockResolvedValue(sender);
+      User.findOne.mockResolvedValue(recipient);
+      Wallet.findOne
+        .mockResolvedValueOnce({ balance: 510, transactions: [], save: jest.fn() }) // 500 + fee (15) = 515
+        .mockResolvedValueOnce({ balance: 0, transactions: [], save: jest.fn() });
+      await sendMoney(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ message: 'Insufficient funds including fee' });
+    });
+
+    it('should send money successfully with fee', async () => {
+      req.body = { recipientEmail: 'recipient@example.com', amount: 500 };
+      Kyc.findOne.mockResolvedValue({ status: 'Verified' });
+      const sender = { _id: req.user._id, email: 'sender@example.com', transferLimits: { min: 100, max: 50000 } };
       const recipient = { _id: new mongoose.Types.ObjectId(), email: 'recipient@example.com' };
       const senderWallet = { balance: 1000, transactions: [], save: jest.fn().mockResolvedValue(true) };
       const recipientWallet = { balance: 0, transactions: [], save: jest.fn().mockResolvedValue(true) };
@@ -106,16 +139,20 @@ describe('Transfer Controller', () => {
       Transfer.mockImplementation(() => transferMock);
 
       await sendMoney(req, res);
-      expect(senderWallet.balance).toBe(500);
+      expect(senderWallet.balance).toBe(485); // 1000 - (500 + 10 + 5)
       expect(recipientWallet.balance).toBe(500);
       expect(senderWallet.transactions[0].reference).toBe('TRF_123_sender');
+      expect(senderWallet.transactions[0].amount).toBe(515); // Amount + fee
+      expect(senderWallet.transactions[0].fee).toBe(15); // 10 + 1% of 500
       expect(recipientWallet.transactions[0].reference).toBe('TRF_123_recipient');
+      expect(recipientWallet.transactions[0].amount).toBe(500);
       expect(senderWallet.save).toHaveBeenCalled();
       expect(recipientWallet.save).toHaveBeenCalled();
       expect(transferMock.save).toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
-        message: 'Money sent successfully'
+        message: 'Money sent successfully',
+        data: expect.objectContaining({ fee: 15 })
       }));
     });
   });
@@ -169,6 +206,7 @@ describe('Transfer Controller', () => {
     });
   });
 
+  // getTransferTransactions Tests
   describe('getTransferTransactions', () => {
     it('should retrieve transactions successfully', async () => {
       const transfers = [
@@ -178,7 +216,6 @@ describe('Transfer Controller', () => {
           amount: 500 
         }
       ];
-      // Mock query with full Promise-like behavior
       const mockQuery = {
         populate: jest.fn().mockReturnValue({
           populate: jest.fn().mockReturnValue(Promise.resolve(transfers))
@@ -194,9 +231,9 @@ describe('Transfer Controller', () => {
         message: 'Transfer transactions retrieved successfully',
         data: transfers
       });
-    }, 10000);
+    });
   });
-  
+
   // cancelRequest Tests
   describe('cancelRequest', () => {
     it('should return 400 if transferId is missing', async () => {
@@ -280,7 +317,7 @@ describe('Transfer Controller', () => {
       req.body = { transferId: '123' };
       const transfer = {
         _id: '123',
-        sender: new mongoose.Types.ObjectId(), // Different from req.user._id
+        sender: new mongoose.Types.ObjectId(),
         recipient: new mongoose.Types.ObjectId(),
         type: 'request',
         status: 'pending'
@@ -290,7 +327,28 @@ describe('Transfer Controller', () => {
       expect(res.status).toHaveBeenCalledWith(403);
     });
 
-    it('should return 400 if insufficient funds', async () => {
+    it('should return 400 if amount below user limit', async () => {
+      req.body = { transferId: '123' };
+      const transfer = {
+        _id: '123',
+        sender: req.user._id,
+        recipient: new mongoose.Types.ObjectId(),
+        amount: 50,
+        type: 'request',
+        status: 'pending',
+        reference: 'TRF_789'
+      };
+      Transfer.findById.mockResolvedValue(transfer);
+      User.findById.mockResolvedValue({ _id: req.user._id, transferLimits: { min: 100, max: 50000 } });
+      Wallet.findOne
+        .mockResolvedValueOnce({ balance: 1000, transactions: [], save: jest.fn() })
+        .mockResolvedValueOnce({ balance: 0, transactions: [], save: jest.fn() });
+      await acceptRequest(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ message: 'Amount must be between 100 and 50000 NGN' });
+    });
+
+    it('should return 400 if insufficient funds including fee', async () => {
       req.body = { transferId: '123' };
       const transfer = {
         _id: '123',
@@ -301,18 +359,17 @@ describe('Transfer Controller', () => {
         status: 'pending',
         reference: 'TRF_789'
       };
-      const senderWallet = { balance: 200, transactions: [], save: jest.fn() };
-      const recipientWallet = { balance: 0, transactions: [], save: jest.fn() };
       Transfer.findById.mockResolvedValue(transfer);
+      User.findById.mockResolvedValue({ _id: req.user._id, transferLimits: { min: 100, max: 50000 } });
       Wallet.findOne
-        .mockResolvedValueOnce(senderWallet)
-        .mockResolvedValueOnce(recipientWallet);
+        .mockResolvedValueOnce({ balance: 510, transactions: [], save: jest.fn() }) // 500 + 15 = 515
+        .mockResolvedValueOnce({ balance: 0, transactions: [], save: jest.fn() });
       await acceptRequest(req, res);
       expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ message: 'Insufficient funds' });
+      expect(res.json).toHaveBeenCalledWith({ message: 'Insufficient funds including fee' });
     });
 
-    it('should accept request successfully', async () => {
+    it('should accept request successfully with fee', async () => {
       req.body = { transferId: '123' };
       const transfer = {
         _id: '123',
@@ -327,23 +384,107 @@ describe('Transfer Controller', () => {
       const senderWallet = { balance: 1000, transactions: [], save: jest.fn().mockResolvedValue(true) };
       const recipientWallet = { balance: 0, transactions: [], save: jest.fn().mockResolvedValue(true) };
       Transfer.findById.mockResolvedValue(transfer);
+      User.findById.mockResolvedValue({ _id: req.user._id, transferLimits: { min: 100, max: 50000 } });
       Wallet.findOne
         .mockResolvedValueOnce(senderWallet)
         .mockResolvedValueOnce(recipientWallet);
 
       await acceptRequest(req, res);
       expect(transfer.status).toBe('completed');
-      expect(senderWallet.balance).toBe(700);
+      expect(senderWallet.balance).toBe(687); // 1000 - (300 + 10 + 3)
       expect(recipientWallet.balance).toBe(300);
       expect(senderWallet.transactions[0].reference).toBe('TRF_123');
+      expect(senderWallet.transactions[0].amount).toBe(313); // Amount + fee
+      expect(senderWallet.transactions[0].fee).toBe(13); // 10 + 1% of 300
       expect(recipientWallet.transactions[0].reference).toBe('TRF_123');
+      expect(recipientWallet.transactions[0].amount).toBe(300);
       expect(senderWallet.save).toHaveBeenCalled();
       expect(recipientWallet.save).toHaveBeenCalled();
       expect(transfer.save).toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
-        message: 'Money request accepted and transfer completed'
+        message: 'Money request accepted and transfer completed',
+        data: expect.objectContaining({ fee: 13 })
       }));
+    });
+  });
+
+  // getFees Tests
+  describe('getFees', () => {
+    it('should retrieve fee structure successfully', async () => {
+      await getFees(req, res);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        message: 'Fee structure retrieved successfully',
+        data: { flat: 10, percentage: 0.01 }
+      });
+    });
+  });
+
+  // getLimits Tests
+  describe('getLimits', () => {
+    it('should return 404 if user not found', async () => {
+      User.findById.mockResolvedValue(null);
+      await getLimits(req, res);
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({ message: 'User not found' });
+    });
+
+    it('should retrieve limits successfully', async () => {
+      User.findById.mockResolvedValue({ _id: req.user._id, transferLimits: { min: 100, max: 50000 } });
+      await getLimits(req, res);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        message: 'Transfer limits retrieved successfully',
+        data: {
+          userLimits: { min: 100, max: 50000 },
+          globalLimits: { min: 50, max: 100000 }
+        }
+      });
+    });
+  });
+
+  // setLimit Tests
+  describe('setLimit', () => {
+    it('should return 400 if min or max is missing or invalid', async () => {
+      req.body = { min: '', max: '' };
+      await setLimit(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ message: 'Valid min and max limits are required' });
+    });
+
+    it('should return 400 if limits are outside global bounds', async () => {
+      req.body = { min: 10, max: 200000 };
+      User.findById.mockResolvedValue({ _id: req.user._id });
+      await setLimit(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ message: 'Limits must be between 50 and 100000 NGN' });
+    });
+
+    it('should return 400 if min is greater than or equal to max', async () => {
+      req.body = { min: 1000, max: 500 };
+      User.findById.mockResolvedValue({ _id: req.user._id });
+      await setLimit(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ message: 'Minimum limit must be less than maximum limit' });
+    });
+
+    it('should set limits successfully', async () => {
+      req.body = { min: 200, max: 20000 };
+      const user = { 
+        _id: req.user._id, 
+        transferLimits: { min: 100, max: 50000 }, 
+        save: jest.fn().mockResolvedValue(true) 
+      };
+      User.findById.mockResolvedValue(user);
+      await setLimit(req, res);
+      expect(user.transferLimits).toEqual({ min: 200, max: 20000 });
+      expect(user.save).toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        message: 'Transfer limits updated successfully',
+        data: { min: 200, max: 20000 }
+      });
     });
   });
 

@@ -17,6 +17,10 @@ const userSchema = new mongoose.Schema({
   },
   resetPasswordToken: String,
   resetPasswordExpire: Date,
+  transferLimits: {
+    min: { type: Number, default: 100 },
+    max: { type: Number, default: 50000 } 
+  }
 });
 
 // Hash the password before saving
